@@ -1,0 +1,239 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r load packages and dataset}
+library(igraph)
+library(data.table)
+library(network)
+
+# import dataset
+Funding1 = read.csv("Funding_events_7.14.csv", head = TRUE)
+Funding2 = read.csv("Funding_events_7.14_page2.csv", head = TRUE)
+colnames(Funding2) =  colnames(Funding1)
+Funding <- rbind(Funding1,Funding2)
+Funding$Deal.Date <- as.Date(Funding$Deal.Date,'%m/%d/%y')
+Funding <- Funding[,c(1,4,11)]
+
+# define a function to generate investors adj matrix from Funding dataframe via edge list
+AdjDate=function(Fundingym){
+  if (nrow(Fundingym) !=0){
+  investor_listym <- strsplit(as.character(Fundingym$Investor),', ')
+  
+  elym <- matrix(, ncol=2, nrow=0)
+    for (i in 1:length(investor_listym)){
+      for (j in 1:length(investor_listym[[i]])){
+        for (k in 1:length(investor_listym[[i]])){
+          elym <- rbind(elym, c(investor_listym[[i]][j],investor_listym[[i]][k]))
+        }}}
+  elym <- as.data.frame(elym)
+  elym <- elym[complete.cases(elym),]
+  elym <- as.matrix(elym)
+  Adjym_graph <- graph_from_edgelist(elym,directed = F)
+  Adjym_graph <- simplify(Adjym_graph,remove.multiple = T,remove.loops = T)
+  }else{
+  Adjym_graph <- graph.empty(directed = F)
+  }
+  return(Adjym_graph)
+}
+
+# generate a df containing all unique year-month
+dealmonth <- sort(unique(format(Funding$Deal.Date,"%Y-%m")))
+```
+
+
+
+```{r Q1 network of July 2014}
+# July 2014
+Adj_graph0714 <- graph.empty(directed = F)
+for (ym in 1:which(dealmonth == "2014-07")){
+Fundingym <- Funding[format(Funding$Deal.Date,'%Y-%m') %in% dealmonth[ym],]
+Adj_graph0714 <- union(Adj_graph0714, AdjDate(Fundingym))
+}
+
+# generate network graph
+#plot.igraph(Adj_graph0714,vertex.size=3,vertex.label=NA,main = 'Network of July 2014')
+dist0714 <- mean_distance(Adj_graph0714)
+Adj0714 <- as.matrix(get.adjacency(Adj_graph0714))
+center0714 <- colnames(Adj0714)[which(colSums(Adj0714)==max(colSums(Adj0714)))]
+
+cat('The center of network of July 14: ', center0714[1],
+    '; The average shortest path length between all firms in July 2014 is ', round(dist0714,2), ', which is very high because there were more and more venture capitals entered this market and they may invest in different portfolio companies in different deals.' )
+```
+
+
+```{r Q2 Coreness of the venture capital network}
+meancore_ym <- matrix(,ncol=3,nrow=length(dealmonth))
+colnames(meancore_ym) <- c("Month","Year-Month","mean_coreness")
+Adj_graph <- graph.empty(directed = F)
+
+for (ym in 1:length(dealmonth)){
+Fundingym <- Funding[format(Funding$Deal.Date,'%Y-%m') %in% dealmonth[ym],]
+Adj_graph <- union(Adj_graph,AdjDate(Fundingym))
+
+mean_coreness <- mean(coreness(Adj_graph))
+meancore_ym[ym,] <- c(ym,dealmonth[ym],mean_coreness)
+}
+meancore_ym <- as.data.frame(meancore_ym)
+meancore_ym[,3] <- as.numeric(as.character(meancore_ym[,3]))
+meancore_ym[,1] <- as.character(meancore_ym[,1])
+write.csv(meancore_ym,"corenessfinal")
+
+# plot line graph
+plot(x=meancore_ym[,1],y=meancore_ym[,3], type ="l", xlab = 'Month', ylab = 'Avg coreness', main = 'Coreness of the venture capital network')
+```
+
+
+```{r Q3 Decay network}
+dealmonth2 <- format(seq.Date(min(Funding$Deal.Date), max(Funding$Deal.Date),by='months'), '%Y-%m')
+meancore_ym2 <- matrix(,ncol=3,nrow=length(dealmonth2))
+colnames(meancore_ym2) <- c("Month","Year-Month","mean_coreness")
+
+A <- list()
+Adj_graph <- graph.empty(directed = F)
+
+for (ym in 1:120){
+Fundingym <- Funding[format(Funding$Deal.Date,'%Y-%m') %in% dealmonth2[ym],]
+A[[ym]] <-AdjDate(Fundingym)
+Adj_graph <- union(Adj_graph,AdjDate(Fundingym))
+mean_coreness <- mean(coreness(Adj_graph))
+meancore_ym2[ym,] <- c(ym,dealmonth2[ym],mean_coreness)
+}
+
+for (ym in 121:length(dealmonth2)){
+Fundingym <- Funding[format(Funding$Deal.Date,'%Y-%m') %in% dealmonth2[ym],]
+A[[ym]] <-AdjDate(Fundingym)
+Adj_graph <- graph.empty(directed = F)
+    for (tenyrs in (ym-120):ym){
+       Adj_graph <- union(Adj_graph,A[[tenyrs]])
+  }
+mean_coreness <- mean(coreness(Adj_graph))
+meancore_ym2[ym,] <- c(ym,dealmonth2[ym],mean_coreness)
+}
+  
+meancore_ym2 <- as.data.frame(meancore_ym2)
+meancore_ym3 <- meancore_ym2[meancore_ym2$`Year-Month` %in% dealmonth,]
+meancore_ym3$Month <- seq(1,276,1)
+meancore_ym3[,3] <- as.numeric(as.character(meancore_ym3[,3]))
+meancore_ym3[,1] <- as.character(meancore_ym3[,1])
+
+# plot line graph
+plot(x=meancore_ym3[,1],y=meancore_ym3[,3], type ="l", xlab = 'Month', ylab = 'Avg coreness', main = 'Coreness of the venture capital network-ties decay after 10 yrs')
+
+cat('Overall, these two figures are very similiar, which means although relationships ties will decay after ten years, most venture capitals will coinvest again in the past ten years to renew their relationships. But we can also notice that avg coreness dropped faster in the second figure after 200th month, which means the decayed network will be more sparse or scattered after 200th month.')
+```
+
+
+```{r Q4 For the June 1991 network, use the iterative correlation clustering method}
+# June 1991
+Adj_graph0691 <- graph.empty(directed = F)
+for (ym in 1:which(dealmonth == "1991-06")){
+Fundingym <- Funding[format(Funding$Deal.Date,'%Y-%m') %in% dealmonth[ym],]
+Adj_graph0691 <- union(Adj_graph0691,AdjDate(Fundingym))
+}
+Adj0691 <- as.matrix(as_adjacency_matrix(Adj_graph0691))
+diag(Adj0691) <- 1
+
+# iterative correlation clustering method
+concor0691 = list()
+concor0691[[1]] = Adj0691
+
+for(i in 2:10){
+	concor0691[[i]] = cor(concor0691[[i-1]])
+	}
+concor0691[[10]][concor0691[[10]] < 0] = 0
+
+concor_net0691 = graph.adjacency(as.matrix.network(network(concor0691[[10]])), "undirected")
+plot.igraph(concor_net0691, edge.arrow.size=.5, vertex.size =.2, vertex.label=NA,vertex.label.cex=.3, main='correlation clustering')
+
+```
+
+
+```{r Q5 network structure}
+#------------------------------------------evidence 1---------------------------------------
+highcore_pc <- matrix(,ncol=3,nrow=length(dealmonth))
+colnames(highcore_pc) <- c("Month","Year-Month","high_coreness_pc")
+Adj_graph <- graph.empty(directed = F)
+
+# assume high coreness means coreness > 75th percentile
+for (ym in 1:length(dealmonth)){
+Fundingym <- Funding[format(Funding$Deal.Date,'%Y-%m') %in% dealmonth[ym],]
+Adj_graph <- union(Adj_graph,AdjDate(Fundingym))
+
+c <- coreness(Adj_graph)
+high_pc <- length(c[c > quantile(c,0.75)])/length(c)
+highcore_pc[ym,] <- c(ym,dealmonth[ym],high_pc)
+}
+
+highcore_pc <- as.data.frame(highcore_pc)
+highcore_pc[,3] <- as.numeric(as.character(highcore_pc[,3]))
+highcore_pc[,1] <- as.character(highcore_pc[,1])
+
+# plot line graph
+plot(x=highcore_pc[,1],y=highcore_pc[,3], type ="l", xlab = 'Month', ylab = '% VC with high coreness', main = 'Distribution of coreness of the VC network')
+
+#------------------------------------------evidence 2---------------------------------------
+largecluster_pc <- matrix(,ncol=3,nrow=length(dealmonth))
+colnames(largecluster_pc) <- c("Month","Year-Month","large_cluster_pc")
+Adj_graph <- graph.empty(directed = F)
+
+for (ym in 1:length(dealmonth)){
+Fundingym <- Funding[format(Funding$Deal.Date,'%Y-%m') %in% dealmonth[ym],]
+Adj_graph <- union(Adj_graph,AdjDate(Fundingym))
+
+csize <- (components(Adj_graph,mode='strong'))$csize
+largepc <- max(csize)/sum(csize)
+largecluster_pc[ym,] <- c(ym,dealmonth[ym],largepc)
+}
+
+plot(x=largecluster_pc[,1],y=largecluster_pc[,3], type ="l", xlab = 'Month', ylab = '% VC in the largest cluster', main = 'Size of the largest cluster of the VC network')
+
+cat('Answers: the VC network is core-periphery structure. Because as time goes by, more firms have very high coreness and fewer firms have very low coreness, which suggest that most firms are in the core and few are scattered in the periphery.')
+
+```
+
+
+
+```{r Q6 For the June 2001 network, use the iterative correlation clustering method}
+# June 2001
+Adj_graph0601 <- graph.empty(directed = F)
+for (ym in 1:which(dealmonth == "2001-06")){
+Fundingym <- Funding[format(Funding$Deal.Date,'%Y-%m') %in% dealmonth[ym],]
+Adj_graph0601 <- union(Adj_graph0601,AdjDate(Fundingym))
+}
+Adj0601 <- as.matrix(as_adjacency_matrix(Adj_graph0601))
+diag(Adj0601) <- 1
+
+# iterative correlation clustering method
+concor0601 = list()
+concor0601[[1]] = Adj0601
+
+for(i in 2:10){
+	concor0601[[i]] = cor(concor0601[[i - 1]])
+}
+concor0601[[10]][concor0601[[10]] < 0] = 0
+
+concor_net0601 <- graph.adjacency(as.matrix.network(network(concor0601[[10]])), "undirected")
+nocluster <- (components(concor_net0601))$no
+
+# edge betweenness score clustering method
+nocluster_ebet <- cluster_edge_betweenness(Adj_graph0601)
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
