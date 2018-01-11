@@ -21,4 +21,4 @@ The original data set is retrieved from the ASU Social Computing Data Repository
 In this nwtwork, users who are friends will be connected.
 We examined network structure, centrality measurements, power law and correlations of attributes.
 
-Contributors: Lancy Mao, Agnes Liu (Teammate), Wenbo Liu (Teammate)
+Project Contributors: Lancy Mao, Agnes Liu (Teammate), Wenbo Liu (Teammate)
