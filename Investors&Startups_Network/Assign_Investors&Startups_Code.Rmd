@@ -1,0 +1,188 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+```{r load package and data}
+rm(list = ls(all = TRUE))
+library(sna)
+library(data.table)
+library(ergm)
+library(igraph)
+library(RSiena)
+
+edges <- fread('startup_rounds_and_participants.csv',header = T)
+edges <- edges[!duplicated(edges),]
+
+edges$year <- year(edges$round_record_date)
+edges <- edges[year == 2014, year := 2013]    #simplify dataset, replace 2014 with 2013
+
+# create a sequence id list for raw userid
+nodes <- edges
+colnames(nodes)[2] = colnames(nodes)[3] = 'rawid'
+nodes <- sort(unique(rbind(nodes[,2],nodes[,3])))
+id = seq(1,179,1)
+nodes = cbind(id, nodes)
+
+edges=merge(nodes, edges, by.x = "rawid", by.y="startup_id")
+names(edges)[1]="startup_R_id"
+names(edges)[2]="startup_id"
+edges=merge(nodes, edges, by.x = "rawid", by.y="participant_id")
+names(edges)[1]="participant_R_id"
+names(edges)[2]="participant_id"
+```
+
+
+Use the network information provided and an ERGM model to predict whether reciprocation
+is more or less likely in this network. What if we only consider connections between startups
+in the model? Why does the second model appear different? Include an edges intercept in
+both models.
+
+```{r Q1}
+# connections between startups and users/startups
+net1 = network(edges[,c("startup_id","participant_id")])
+m1 = ergm(net1 ~ edges + mutual,burnin=15000,MCMCsamplesize=30000,verbose=FALSE)
+summary(m1)
+
+# For the first model, the mutual value of 0.372 means that reciprocity is slightly more common than expected by chance (positive and but insignificant)
+
+# only consider connections between startups
+edge_s <- edges[edges$participant_type == 'Startup',]
+net2 = network(edge_s[,c("startup_id","participant_id")])
+m2 = ergm(net2 ~ edges + mutual,burnin=15000,MCMCsamplesize=30000,verbose=FALSE)
+summary(m2)
+
+# For the second model, the mutual value of 1.867 means that reciprocity is more common than expected by chance (positive and significant),
+# and here we see that exp(1.867)=6.469,we are 6.5 times as likely to see a tie from ij if ji than if j did not nominate i.
+# Because mutual funding among startups will be more common.
+
+```
+
+Use the network information and an ERGM model to predict whether startups are more likely to have larger fundraising rounds (i.e., the "has as a participant" relationship is more likely to exist) if they also participate in more funding rounds. You can run the model on the entire network or just relationships between startups. In either case, include an edges
+intercept as well as a mutuality covariate in the model.
+
+```{r Q2}
+# indegree indicates the amount of participation in funding rounds, so add indegree as node attribute
+graph_at = graph_from_edgelist(as.matrix(edge_s[,c("startup_id","participant_id")]),directed = T)
+net2 %v% 'idegree' <- igraph::degree(graph_at, mode = 'in')
+
+m3 = ergm(net2 ~ edges + mutual + nodecov('idegree'), burnin=15000, MCMCsamplesize=30000, verbose=FALSE)
+summary(m3)
+
+# the node attribute--indegree value of 0.408 (positive and significate) means that startups are more likely to have larger fundraising rounds if they also participate in more funding rounds.
+```
+
+
+Use the network information provided and an ERGM model to predict whether an investor is more or less likely to participate in a startup's round if it has participated in in one of its rounds in the previous year. Include an edges intercept as well as a mutuality covariate in the model.
+
+```{r Q3}
+yr <- sort(unique(edges$year))
+edge_u <- edges[edges$participant_type == 'User',]
+yr12 <- edge_u[year == yr[1],c(4,2)]
+yr13 <- edge_u[year == yr[2],c(4,2)]
+
+yr13$pre <- 
+    apply(yr13, 1, function(x) 
+    ifelse(any(x[2] == yr12$participant_id & x[1] == yr12$startup_id), 1,0))
+
+net3 = network(yr13[,c("startup_id","participant_id")])
+network::set.edge.attribute(net3, "pre", yr13[,3])
+
+adj <- as.matrix.network(net3, attrname = 'pre')
+
+m4 = ergm(net3 ~ edges + mutual + edgecov(adj), burnin=15000, MCMCsamplesize=30000, verbose=FALSE)
+summary(m4)
+
+# An investor is more likely to participate in a startup's round if it has participated in one of its rounds in the previous year.
+
+```
+
+Use the network and startup attributes and an ERGM model to predict whether a startup
+is more likely to have participants in its rounds that have gained similar levels of traction
+in the current year. Then, build a model to predcict whether a startup is more likely to
+have participants in its rounds that have gained similar levels of traction using a term for
+the current year as well as the previous year. Only consider interactions between startups in
+these models, and include an edges intercept as well as a mutuality covariate in both models.
+
+```{r Q4}
+edge_s <- edge_s[complete.cases(edge_s),]
+# extract corresponding traction value for each startup
+s_tra <- sort(unique(edge_s[,c(4,8,9)]))
+p_tra <- sort(unique(edge_s[,c(2,9)]))
+p_tra <- merge(p_tra,s_tra,by.x=c('year','participant_id'), by.y=c('year','startup_id'))
+
+# if a startup has more than one round in one year, sum tractions
+library(sqldf)
+p_tra <- sqldf('SELECT participant_id,year,SUM(traction) FROM p_tra GROUP BY participant_id,year ORDER BY participant_id,year')
+p_tra1 <- sqldf('SELECT participant_id,AVG("SUM(traction)") FROM p_tra GROUP BY participant_id ORDER BY participant_id')
+edge_s1 <- merge(edge_s, p_tra, by=c('year','participant_id'))
+colnames(edge_s1)[c(9,10)] <- c('s_traction','p_traction')
+
+# current year 2012 --------------------------
+net4 <- network(edge_s1[year==2012, c(5,2)])
+net4 %v% 'p_traction' <- p_tra[p_tra$year==2012, 3]
+
+m5 = ergm(net4 ~ edges + mutual + absdiff('p_traction'), burnin=15000, MCMCsamplesize=30000, verbose=FALSE)
+summary(m5)
+# the node attribute--absolute difference of participant's traction of 1.424e-12 (positive and insignificate) which doesn't support the argument: a startup is more likely to have participants in its rounds that have gained dissimilar levels of traction in 2012.
+
+# current year 2013 --------------------------
+net5 <- network(edge_s1[year==2013, c(5,2)])
+net5 %v% 'p_traction' <- p_tra[p_tra$year==2013, 3]
+
+m6 = ergm(net5 ~ edges + mutual+ absdiff('p_traction'), burnin=15000, MCMCsamplesize=30000, verbose=FALSE)
+summary(m6)
+# the node attribute--absolute difference of participant's traction of -5.499e-08 (negative and significate) means that a startup is more likely to have participants in its rounds that have gained similar levels of traction in 2013. It is more likely startup will participate in the round where startups' traction difference is smaller.
+
+# current & previous year 2012-2013 --------------------------
+net6 <- network(edge_s1[, c(5,2)])
+net6 %v% 'p_traction' <- p_tra1[, 2]
+
+m7 = ergm(net6 ~ edges + absdiff('p_traction'), burnin=15000, MCMCsamplesize=30000, verbose=FALSE)
+summary(m7)
+# the node attribute--absolute difference of participant's traction of 1.369e-12 (positive and insignificate) which doesn't support the argument that a startup is more likely to have participants in its rounds that have gained similar levels of traction in current year and previous year. It is more likely startup will participate in the round where startups' traction difference is smaller.
+
+```
+
+Of the models run so far, which has the best fit to the actual network? Discuss the model
+fit using (1) the built-in mcmc diagnostics, (2) a simulation of the actual network using the
+results from the model, and (3) a goodness-of-fit analysis of the estimated model.
+
+```{r Q5 model evaluation}
+# Here, we evaluate the model in Q2:
+#-----------the built-in mcmc diagnostics
+mcmc.diagnostics(m3)
+# Distributions of density of edges, mutual, indegree appear to be normal distribution, so the estimates are good;
+
+#-----------a simulation of the actual network using the results from the model
+m3.sim=simulate(m3,nsim=100)
+simnet3=m3.sim[[1]]
+summary(simnet3)
+plot(simnet3)
+# The simulated network looks similiar with actual network;
+
+#-----------a goodness-of-fit analysis of the estimated model
+# the built in goodness-of-fit routine is also very useful
+m3.gof = gof(m3~idegree)
+plot(m3.gof)
+# Overall, the trend of line is similiar with box plot, however, for indegree is 0 and 1, the line is far away from the range of simulated results. So the model is not good when indegree is 0 and 1.
+
+```
+
+Extra challenge problem: RSiena provides a similar function to ERGM, but is more tailored
+for longitudinal data. Re-run the longitudinal models above (Questions 3, 4) using RSiena to
+determine if RSiena and ERGM produce similar results.
+```{r Q6}
+# rerun the model in Q3
+n3 = sienaDependent( as.matrix(yr13[,c("startup_id","participant_id")]))
+a <- unlist(yr13[,1])
+pre12 = coCovar(a)
+
+# Define the data set and obtain the basic effects object
+myCoEvolutionData = sienaDataCreate(pre12, n3)
+myCoEvolutionEff = getEffects(myCoEvolutionData)
+myCoEvAlgorithm = sienaAlgorithmCreate
+betterCoEvAlgorithm = sienaAlgorithmCreate(diagonalize = 0.2)
+(ans = siena07( betterCoEvAlgorithm, data = myCoEvolutionData, effects = myCoEvolutionEff ))
+
+```
+
