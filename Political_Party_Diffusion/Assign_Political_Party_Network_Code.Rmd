@@ -1,0 +1,171 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r package and dataset}
+library(data.table)
+library(MASS)
+library(igraph)
+
+districts = fread("district_information_exercise_6.csv", header = TRUE)
+border = fread("geographic_borders.csv", header = TRUE)
+
+# code year to period
+year <- sort(unique(districts[,year]))
+period <- seq(1,12,by=1)
+period <- cbind(year,period)
+districts <- merge(districts,period, by='year')
+
+# every districts' neigbor distircts (excl.itself)
+d <- unique(districts$district)
+adjs = lapply(seq_len(length(d)), function(j) border$district[ border$focal_district == d[j]])
+```
+
+
+```{r Q1 model of drought_or_flood & standardized rainfall}
+# mild or moderate drought_or_flood
+districts$drought_or_flood <- ifelse(districts$mild_drought_or_flood==1 | districts$moderate_drought_or_flood ==1,1,0)
+
+# add four new variables
+districts$df_nei<- NA
+districts$df_self<- NA
+districts$rf_nei<- NA
+districts$rf_self<- NA
+
+for (i in 1:nrow(districts)){
+    dfself <- unlist(districts[(districts$district == districts[i,district]) & (districts$period == districts[i,period]-1),37])
+    districts$df_self[i] <- ifelse(length(dfself)!=0,dfself,NA)
+    
+    rfself <- unlist(districts[(districts$district == districts[i,district]) & (districts$period == districts[i,period]-1),29]) 
+    districts$rf_self[i] <- ifelse(length(rfself)!=0,rfself,NA)
+    
+    j <- match(districts[i,district],d)
+    dfnei <- unlist(districts[districts$district %in% adjs[[j]] & (districts$period == districts[i,period]-1),37])
+    districts$df_nei[i] <- ifelse(length(dfnei)!=0, mean(dfnei,na.rm = T),NA)
+    
+    rfnei <- unlist(districts[districts$district %in% adjs[[j]] & (districts$period == districts[i,period]-1),29])
+    districts$rf_nei[i] <- ifelse(length(rfnei)!=0, mean(rfnei,na.rm = T),NA)    
+}    
+
+# model1: drought_or_flood------------------------------------------
+model_df <- glm(districts$drought_or_flood ~ districts$df_nei +districts$df_self,family=binomial(link='logit'),districts, na.action = na.exclude)
+summary(model_df)
+# df_nei: neighbor districts experience (mild/moderate) drought or flood in the previous period
+# df_self: the district experiences (mild/moderate) drought or flood in the previous period
+# Both df_nei (p value = 0.729) and df_self (p value = 0.142)  are insignificate,
+# so both droughts and floods are random from one election period to the next.
+
+# model2: rainfall------------------------------------------
+model_rf <- lm(districts$standardized_rainfall ~ districts$rf_nei +districts$rf_self,districts, na.action = na.exclude)
+summary(model_rf)
+# rf_nei: standardized rainfall of neighbor districts in the previous period
+# rf_self: standardized rainfall of the district in the previous period
+# Both rf_nei (p value = 0.0170) and rf_self (p value = 0.0136) have significant influence,
+# so standardized rainfall in current period is assocaited with the previous period in both self and neighbor districts. rf_nei has negative relation with standardized rainfall in current period, while rf_self has positive relation.
+
+```
+
+
+
+```{r Q2 glm.nb model_number of parties}
+glmnb_df_mild <- glm.nb(round(districts$new_parties,0) ~ districts$mild_drought_or_flood + factor(districts$district) ,districts, na.action = na.exclude)
+summary(glmnb_df_mild)
+# mild droughts or floods (p value = 0.0196) has significate influence
+# so mild droughts or floods is associated with number of parties positively (estimate >0)
+
+glmnb_df_mo <- glm.nb(round(districts$new_parties,0) ~ districts$moderate_drought_or_flood + factor(districts$district) ,districts, na.action = na.exclude)
+summary(glmnb_df_mo)
+# moderate droughts or floods (p value = 0.0012) has significate influence,
+# so moderate droughts or floods is associated with number of parties positively (estimate >0)
+
+glmnb_rf <- glm.nb(round(districts$new_parties,0) ~ districts$standardized_rainfall + factor(districts$district) ,districts, na.action = na.exclude)
+summary(glmnb_rf)
+# standardized rainfall has significate influence (p value = 0.0074)
+# so standardized rainfall is associated with number of parties negatively (estimate <0)
+```
+
+
+
+```{r Q3 add neighbor value in the previous period}
+districts$moderate_df_nei <- NA
+
+for (i in 1:nrow(districts)){
+    j <- match(districts[i,district],d)
+    nei <- unlist(districts[districts$district %in% adjs[[j]] & (districts$period == districts[i,period]-1),35])  # value of neighbors in previous period
+    districts$moderate_df_nei[i] <- ifelse(length(nei)!=0, mean(nei,na.rm = T),NA)
+}    
+
+glmnb_df2 <- glm.nb(round(districts$new_parties,0) ~ districts$moderate_df_nei + districts$moderate_drought_or_flood + factor(districts$district),districts, na.action = na.exclude)
+summary(glmnb_df2)
+# moderate df in the district has significant influence (p value = 0.0004)
+# moderate df in neighbor districts in previous period has significant influence (p value = 0.048)
+# both of them have positive relations with number of parties (estimate >0)
+
+glmnb_rf2 <- glm.nb(round(districts$new_parties,0) ~ districts$rf_nei + districts$standardized_rainfall + factor(districts$district),districts, na.action = na.exclude)
+summary(glmnb_rf2)
+# standardized rainfall in the district has significant influence (p value = 0.00112)
+# standardized rainfall in neighbor districts in previous period has significant influence (p value = 0.000175)
+# both of them have negative relations with number of parties (estimate <0)
+```
+
+
+
+```{r Q4}
+glmnb_df3 <- glm.nb(round(districts$first_foundings,0) ~ districts$moderate_df_nei + districts$moderate_drought_or_flood + factor(districts$district),districts, na.action = na.exclude)
+summary(glmnb_df3)
+# moderate df in the district has insignificant influence (p value = 0.3244)
+# moderate df in neighbor districts in previous period has significant influence (p value = 2.35e-07)
+# brand new parties that have never appeared in the political system before (first_foundings) tend to get formed as a result of its neighbors experiencing droughts or floods in the previous period, but the relation is negative (estimate <0)
+# the more moderate droughts or floods its self experienced currently and its neigbors experienced previously, the less founding parties.
+
+glmnb_df4 <- glm.nb(round(districts$franchise_foundings,0) ~ districts$moderate_df_nei + districts$moderate_drought_or_flood + factor(districts$district),districts, na.action = na.exclude)
+summary(glmnb_df4)
+# moderate df in the district has significant influence (p value = 1.27e-10)
+# moderate df in neighbor districts in previous period has significant influence (p value < 2e-16)
+# franchise parties that have contested elections in other districts in previous election periods (franchise_foundings) tend to get formed as a result of a district experiencing droughts or floods, and its neighbors experiencing droughts or floods in the previous period, and the relation is positive (estimate >0). 
+# the more moderate droughts or floods its self experienced currently and its neigbors experienced previously, the more franchise parties.
+```
+
+
+```{r Extra Question}
+g <- graph_from_edgelist(as.matrix(border),directed = F)
+g <- simplify(g,remove.multiple = T,remove.loops = T)
+sp <- shortest.paths(g)
+coln <- colnames(sp)
+
+# add four new variables
+districts$df_nei2<- NA      #droughts or floods experienced two districts away in the previous election period
+districts$df_nei_p2<- NA   #droughts or floods that appear two districts away, two election periods ago
+
+for (i in 1:nrow(districts)){
+    j <- match(districts[i,district],coln)
+    neig2 <- names(sp[sp[,j]==2,j])  #list of neigbors two districts away
+    dfnei <- unlist(districts[districts$district %in% neig2 & (districts$period == districts[i,period]-1),37])
+    districts$df_nei2[i] <- ifelse(length(dfnei)!=0, mean(dfnei,na.rm = T),NA)
+    dfnei <- unlist(districts[districts$district %in% neig2 & (districts$period == districts[i,period]-2),37])
+    districts$df_nei_p2[i] <- ifelse(length(dfnei)!=0, mean(dfnei,na.rm = T),NA)   
+}  
+
+glmnb_df5 <- glm.nb(round(districts$first_foundings,0) ~ districts$df_nei2 + factor(districts$district),districts, na.action = na.exclude)
+summary(glmnb_df5)
+# droughts or floods experienced two districts away in the previous election period has significant and negative influence (p value = 1.42e-14)
+
+glmnb_df6 <- glm.nb(round(districts$franchise_foundings,0) ~ districts$df_nei_p2 + factor(districts$district),districts, na.action = na.exclude)
+summary(glmnb_df6)
+# droughts or floods that appear two districts away, two election periods ago has insignificant influence (p value = 0.5266)
+
+# these results suggests that the diffusion process of political parties can influence two districts away and only be significant within one election periods ago.
+```
+
+
+
+
+
+
+
+
+
+
+
+
