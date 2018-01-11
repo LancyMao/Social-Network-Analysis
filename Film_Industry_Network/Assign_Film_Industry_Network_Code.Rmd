@@ -1,0 +1,175 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+Use the keywords shared between two producers to determine how many producers are maximally similar according to cosine & jaccard similarity.
+```{r Q1}
+library(data.table)
+library(igraph)
+key1985 <- read.csv('production_keyword_matrix_1985.csv',header=T)
+row.names(key1985) <- key1985[,1]
+key1985 <- key1985[,2:ncol(key1985)]
+
+# define cosine and jaccard functions
+cosine <- function(A,B){
+  cAB <- (t(A)%*% B)/(sqrt(t(A)%*% A)*sqrt(t(B)%*% B))
+  return(cAB)
+}
+
+jaccard <- function(A,B){
+  and <- unname(table(A !=0 & B!=0)['TRUE'])
+  and <- ifelse(is.na(and),0,and)
+  or <- unname(table(A !=0 | B!=0)['TRUE'])
+  or <- ifelse(is.na(or),0,or)
+  jAB <- unname(and/or)
+  return(jAB)
+}
+
+a <- matrix(, ncol=4, nrow=0)
+for (i in 1:ncol(key1985)){
+  for (k in 1:ncol(key1985)){
+    if (i < k ){
+  A <- as.matrix(key1985[,i])
+  B <- as.matrix(key1985[,k])
+  c <- cosine(A,B)
+  j <- jaccard(A,B)
+  a <- rbind(a,c(i,k,c,j))
+    }
+  }}
+
+table(a[,3]==1)
+table(a[,4]==1)
+# 70 pairs of producers are max similiar with 1 cosine similarity
+# 120 pairs of producers are max similiar with 1 jaccard similarity
+# but if we round the similarity to 15 digits, there will be 120 pairs with 1 cosine and 1 jaccard similarity
+
+```
+
+
+```{r Q2}
+rev <- fread('box_office_films.csv',header = T)
+simi <- fread('film_distance_3year_window.csv',header = T)
+
+m1 <- merge(simi,rev[,c(1,4)],by.x='pindex1',by.y = 'pindex')
+m1 <- merge(m1,rev[,c(1,4)],by.x='pindex2',by.y = 'pindex')
+m1$revdiff <- abs(m1$total_box.x - m1$total_box.y)/max(m1$total_box,m1$total_box.y)  #normalize the revenue diff
+
+plot(m1$distance,m1$revdiff)
+cor(m1$distance,m1$revdiff)
+# In general, pairs of films with high distance will not tend to have high revenue difference, the cor is 0.017
+```
+
+
+
+
+
+
+```{r Q3}
+library(sqldf)
+fp <- fread('films_and_production_companies.csv',header = T)
+fkp <- fread('keywords_films_producers.csv',header = T)
+
+# top 250 keywords
+top250 <- fkp[(fkp$year>2006)&(fkp$year<2017),c(1,4)]
+top250 <- merge(top250,rev[,c(1,4)],by='pindex')
+top250 <- top250[!duplicated(top250),]
+
+# film keys with revenue, and get the top 250 keys whose revenue in the past 10 years is top 250
+top250keys <- sqldf('
+SELECT keyindex, SUM(total_box) AS box
+FROM top250
+GROUP BY keyindex
+ORDER BY box DESC
+LIMIT 250')
+
+
+# generate a df containing revenue by producer by year,and categorize producers' size based on rev of that year
+largepro <- sqldf('
+SELECT fp.PCindex, fp.year AS year, SUM(rev.total_box) AS box
+FROM rev JOIN fp USING (pindex)
+WHERE year BETWEEN 2007 AND 2016
+GROUP BY fp.PCindex, year')
+
+for (i in min(largepro$year):max(largepro$year)){
+  qt <- quantile((largepro[largepro$year == i,])$box, 0.75)
+  largepro$size[(largepro$box >= qt) & (largepro$year==i)] <- 'large'}
+largepro$size[is.na(largepro$size)] <- 'small'
+colnames(largepro)<-c("pcindex", "year","box","size")
+
+
+# retrieve all film & key pairs in 2007-2016, and merge it with producer revenue and size
+filmkeys <- fkp[(fkp$year>2006)&(fkp$year<2017),c(1,3,4,6)]
+filmkeys <- filmkeys[!duplicated(filmkeys),]
+filmkeys <- merge(filmkeys,largepro, by=c("pcindex", "year"))
+
+# only include the top 250 keywords
+filmkeys <- filmkeys[filmkeys$keyindex %in% top250keys[,1],]
+
+# categorize each flim into 'large','small','mix' based on producer size
+film <- sort(unique(filmkeys$pindex))
+for (i in 1:length(film)){
+  sizelist <- unlist(filmkeys[filmkeys$pindex == film[i],6])
+  s <- table(sizelist == 'small')['TRUE']
+  if (is.na(s)){
+    filmkeys$filmtype[filmkeys$pindex == film[i]] <- 'large'
+  }else if (s == length(sizelist)){
+    filmkeys$filmtype[filmkeys$pindex == film[i]] <- 'small'
+  }else{
+    filmkeys$filmtype[filmkeys$pindex == film[i]] <- 'mix'
+  }}
+
+# categorize each key into 'large','small','mix' based on primary film category
+key <- sort(unique(filmkeys$keyindex))
+for (i in 1:length(key)){
+  sizelist <- filmkeys[filmkeys$keyindex == key[i],7]
+  s <- table(sizelist)
+  s <- s[s==max(s)]
+  if (names(s)=='large'){
+    filmkeys$keytype[filmkeys$keyindex == key[i]] <- 'large'
+  }else if (names(s)=='small'){
+    filmkeys$keytype[filmkeys$keyindex == key[i]] <- 'small'
+  }else{
+    filmkeys$keytype[filmkeys$keyindex == key[i]] <- 'mix'
+  }}
+
+# genrate a df containing keyindex and keytype (used to set vertex color)
+keytype <- filmkeys[,c(4,8)]
+keytype <- keytype[!duplicated(keyindex),]
+
+fk <- filmkeys[,c(3,4)]
+fk <- fk[!duplicated(fk),]
+
+# Generate the Affiliation Matrix
+Aff <- xtabs(~ pindex + keyindex, fk)
+attr(Aff, "class") <- NULL 
+attr(Aff, "call") <- NULL 
+
+# Generate the co-occurrance matrix
+Adj <- t(Aff)  %*% Aff
+
+g= graph.adjacency(Adj,weighted = T,'undirected')
+g = simplify(g,remove.multiple = TRUE, remove.loops = TRUE)
+
+# set vertex color based on key word type
+V(g)$type = unlist(keytype[,2][[1]])
+colors = V(g)$type
+colors[colors=='large']= "light blue"
+colors[colors== "mix"]= "red"
+colors[colors== "small"]= "yellow"
+V(g)$color = colors
+
+# sizing by degree
+keyplot <- plot(g, vertex.label=NA,vertex.size=degree(g, mode = "all")/25)
+
+#steps:
+# 1.we get the top 250 key words based on box in the past 10 years;
+# 2.categorize every producer into 'large' and 'small' based on box by year;
+# 3.categorize every film into 'large','small'and 'mix' based on the producer type;
+# 4.categorize every key word into 'large','small'and 'mix' based on the primary film type;
+# 5.create an affiliation matrix and adj matrix
+# 6. set vertex attribute: size---degree, color---type
+# 7. set edge attribute: width---frequency
+
+```
+
