@@ -1,5 +1,6 @@
 # Social-Network-Analysis
-Exercises on Social Network Analysis using R
+Compiling, measuring, and managing network data; analyzing characteristics of individuals, relationships, and groups; predicting why relationships and network structures from; using network characteristics to predict both individual behavior and group and population outcomes.
+The following are exercises and project on Social Network Analysis using R
 
 ## Exercise: Network Structure in venture capital coinvestment networks
 The dataset contains information on venture capital investment events, from June 1981 until July 2014.
@@ -15,4 +16,7 @@ Many startups use AngelList as a platform for generating traction about their co
 In this network, ties represent directed connections from actors (startups) to events (participants in a startup fundraising round).
 I used ERGM model to predict funding relationships among actors (startups and investors)
 
-
+## Project: YouTube User Network
+The original data set is retrieved from the ASU Social Computing Data Repository. It was crawled on Dec, 2008 from YouTube. (http://www.youtube.com/). We edited the data and the final data set contains: 13723 nodes, 76765 edges, 5 attributes and no missing value. 
+In this nwtwork, users who are friends will be connected.
+We examined network structure, centrality measurements, power law and correlations of attributes.
